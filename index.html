@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gear Monitor - Calibration Mode</title>
+    <style>
+        body { background: #000; color: #ccc; margin: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        header { padding: 15px; background: #111; border-bottom: 2px solid #333; text-align: center; }
+        h2 { margin: 0; font-size: 18px; color: #fcfdbf; }
+        
+        .dashboard { display: flex; flex-direction: column; justify-content: space-around; flex-grow: 1; padding: 10px; }
+        .panel { text-align: center; }
+        .panel-title { font-size: 12px; color: #888; text-transform: uppercase; }
+        .panel-value { font-size: 70px; font-weight: bold; color: #0ff; line-height: 1; }
+        .panel-value.gear { color: #ffcc00; font-size: 100px; }
+        .panel-value.db { color: #ff3366; font-size: 50px; }
+        .unit { font-size: 18px; color: #444; }
+
+        /* Calibration Area */
+        .calibration-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 15px; background: #111; border-top: 2px solid #333; }
+        .cal-btn { padding: 15px 5px; background: #222; color: #fff; border: 1px solid #444; border-radius: 5px; font-size: 12px; cursor: pointer; }
+        .cal-btn.active { background: #005555; border-color: #0ff; }
+        .cal-btn span { display: block; font-size: 10px; color: #888; margin-top: 3px; }
+
+        #start-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 25px 60px; font-size: 24px; font-weight: bold; background: #0f0; color: #000; border: none; border-radius: 50px; cursor: pointer; z-index: 100; }
+    </style>
+</head>
+<body>
+
+<button id="start-btn">START SYSTEM</button>
+
+<header>
+    <h2>GEAR MONITOR - CALIBRATION</h2>
+</header>
+
+<div class="dashboard">
+    <div class="panel">
+        <div class="panel-title">Detected Gear</div>
+        <div><span id="gear-val" class="panel-value gear">-</span></div>
+    </div>
+    <div class="panel">
+        <div class="panel-title">Frequency</div>
+        <div><span id="hz-val" class="panel-value">0</span><span class="unit">Hz</span></div>
+    </div>
+    <div class="panel">
+        <div class="panel-title">Volume</div>
+        <div><span id="db-val" class="panel-value db">0</span></div>
+    </div>
+</div>
+
+<div class="calibration-grid">
+    <button class="cal-btn" onclick="calibrate(1)">SET GEAR 1<span id="g1-hz">---</span></button>
+    <button class="cal-btn" onclick="calibrate(2)">SET GEAR 2<span id="g2-hz">---</span></button>
+    <button class="cal-btn" onclick="calibrate(3)">SET GEAR 3<span id="g3-hz">---</span></button>
+    <button class="cal-btn" onclick="calibrate(4)">SET GEAR 4<span id="g4-hz">---</span></button>
+    <button class="cal-btn" onclick="calibrate(5)">SET GEAR 5<span id="g5-hz">---</span></button>
+    <button class="cal-btn" onclick="resetCalibration()" style="background:#400">RESET ALL</button>
+</div>
+
+<script>
+    let audioContext, analyser, dataArray;
+    let gearMap = {}; // Stores { gearNumber: frequency }
+    let currentHz = 0;
+    let currentMaxByte = 0;
+
+    const FREQ_TOLERANCE = 5.0; // 容錯範圍 ±5Hz
+    const NOISE_GATE = 20;      // 基礎噪音過濾
+
+    document.getElementById('start-btn').onclick = function() {
+        this.style.display = 'none';
+        initAudio();
+    };
+
+    async function initAudio() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } 
+            });
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 4096;
+            audioContext.createMediaStreamSource(stream).connect(analyser);
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+            update();
+        } catch (err) { alert("Mic Error: " + err); }
+    }
+
+    // 錄製當前頻率到指定檔位
+    function calibrate(gearNum) {
+        if (currentHz > 0 && currentMaxByte > NOISE_GATE) {
+            gearMap[gearNum] = currentHz;
+            document.getElementById(`g${gearNum}-hz`).innerText = Math.round(currentHz) + " Hz";
+            alert(`Gear ${gearNum} set to ${Math.round(currentHz)} Hz`);
+        } else {
+            alert("Too quiet! Make sure engine is running.");
+        }
+    }
+
+    function resetCalibration() {
+        gearMap = {};
+        for(let i=1; i<=5; i++) document.getElementById(`g${i}-hz`).innerText = "---";
+        alert("All settings cleared.");
+    }
+
+    function update() {
+        analyser.getByteFrequencyData(dataArray);
+
+        // 1. 音量偵測
+        let maxByte = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+            if (dataArray[i] > maxByte) maxByte = dataArray[i];
+        }
+        currentMaxByte = maxByte;
+        document.getElementById('db-val').innerText = maxByte;
+
+        // 2. 尋找最強頻率 (限制在 40-500Hz 避免高頻干擾)
+        let maxVal = -1, maxIndex = -1;
+        const low = Math.floor(40 / (audioContext.sampleRate/4096));
+        const high = Math.floor(500 / (audioContext.sampleRate/4096));
+
+        for (let i = low; i < high; i++) {
+            if (dataArray[i] > maxVal) { maxVal = dataArray[i]; maxIndex = i; }
+        }
+
+        currentHz = maxIndex * (audioContext.sampleRate / 2 / dataArray.length);
+        document.getElementById('hz-val').innerText = Math.round(currentHz);
+
+        // 3. 根據錄製的資料判定檔位
+        let detectedGear = "-";
+        
+        // 如果錄製過資料，就進行比對
+        for (let gearNum in gearMap) {
+            if (Math.abs(currentHz - gearMap[gearNum]) <= FREQ_TOLERANCE) {
+                detectedGear = gearNum;
+                break;
+            }
+        }
+
+        document.getElementById('gear-val').innerText = detectedGear;
+        requestAnimationFrame(update);
+    }
+</script>
+</body>
+</html>
